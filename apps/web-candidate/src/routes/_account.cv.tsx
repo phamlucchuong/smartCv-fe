@@ -2,9 +2,10 @@ import { createFileRoute } from '@tanstack/react-router'
 import * as React from 'react'
 import { Button } from '@smart-cv/ui'
 import { useTranslation } from '@smart-cv/i18n'
-import { Upload, FileText, Star, Trash2, RefreshCw, Eye, Sparkles } from 'lucide-react'
+import { Upload, FileText, Star, Trash2, RefreshCw, Eye, Sparkles, ZoomIn, ZoomOut } from 'lucide-react'
 import { toast } from 'sonner'
-import { useListCvs } from '@smart-cv/api'
+import { useListCvs, useSetDefaultCv, useDeleteCv, useReanalyzeCv, uploadCvFile, getListCvsQueryKey } from '@smart-cv/api'
+import { useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '../store/useAuthStore'
 
 export const Route = createFileRoute('/_account/cv')({
@@ -25,39 +26,59 @@ const cvStatusLabel: Record<string, string> = {
   FAILED: 'Thất bại',
 }
 
-function getFileType(filename?: string): 'PDF' | 'DOC' {
+function getFileType(filename?: string): 'PDF' | 'DOCX' | 'DOC' {
   if (!filename) return 'PDF'
-  return filename.toLowerCase().endsWith('.pdf') ? 'PDF' : 'DOC'
+  const lower = filename.toLowerCase()
+  if (lower.endsWith('.pdf')) return 'PDF'
+  if (lower.endsWith('.docx')) return 'DOCX'
+  return 'DOC'
 }
 
 function formatDate(dateStr?: string): string {
   if (!dateStr) return ''
-  try {
-    const d = new Date(dateStr)
-    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`
-  } catch {
-    return dateStr
-  }
+  const d = new Date(dateStr)
+  if (isNaN(d.getTime())) return dateStr
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`
 }
 
 function MyCVPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const currentLang = i18n.language || 'vi'
   const { isAuthenticated } = useAuthStore()
+  const queryClient = useQueryClient()
   const { data, isLoading, isError } = useListCvs({ query: { enabled: isAuthenticated } })
   const cvList = data?.data ?? []
+
+  const { mutateAsync: setDefault, isPending: isSettingDefault } = useSetDefaultCv()
+  const { mutateAsync: deleteCv, isPending: isDeletingCv } = useDeleteCv()
+  const { mutateAsync: reanalyzeCv, isPending: isReanalyzing } = useReanalyzeCv()
+  const isAnyPending = isSettingDefault || isDeletingCv || isReanalyzing
 
   React.useEffect(() => {
     document.title = t('page_title_cv')
   }, [t])
 
   const [userSelected, setUserSelected] = React.useState<string | null>(null)
+  const [isUploading, setIsUploading] = React.useState(false)
   const fileRef = React.useRef<HTMLInputElement>(null)
+
+  const ZOOM_STEP = 0.15
+  const ZOOM_MIN = 0.5
+  const ZOOM_MAX = 2.5
+  const [zoom, setZoom] = React.useState(1.0)
+  const zoomIn = () => setZoom((z) => Math.min(ZOOM_MAX, parseFloat((z + ZOOM_STEP).toFixed(2))))
+  const zoomOut = () => setZoom((z) => Math.max(ZOOM_MIN, parseFloat((z - ZOOM_STEP).toFixed(2))))
+  const zoomReset = () => setZoom(1.0)
 
   const defaultSelected = (cvList.find((c) => c.default) ?? cvList[0])?.id ?? ''
   const selected = userSelected ?? defaultSelected
   const cv = cvList.find((c) => c.id === selected) ?? cvList[0]
 
-  const handleUpload = (file: File | null) => {
+  React.useEffect(() => { setZoom(1.0) }, [selected])
+
+  const invalidateCvs = () => queryClient.invalidateQueries({ queryKey: getListCvsQueryKey() })
+
+  const handleUpload = async (file: File | null) => {
     if (!file) return
     const validType = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)
     if (!validType) {
@@ -68,43 +89,70 @@ function MyCVPage() {
       toast.error(t('account_upload_too_large'))
       return
     }
-    // CV upload coming soon
-    toast.info('CV upload coming soon')
+    setIsUploading(true)
+    try {
+      await uploadCvFile(file)
+      await invalidateCvs()
+      toast.success('CV uploaded successfully')
+    } catch {
+      toast.error('CV upload failed')
+    } finally {
+      setIsUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const handleSetDefault = async (cvId: string) => {
+    try {
+      await setDefault({ cvId })
+      await invalidateCvs()
+      toast.success('Default CV updated')
+    } catch {
+      toast.error('Failed to set default CV')
+    }
+  }
+
+  const handleDelete = async (cvId: string) => {
+    try {
+      await deleteCv({ cvId })
+      await invalidateCvs()
+      if (userSelected === cvId) setUserSelected(null)
+      toast.success('CV deleted')
+    } catch {
+      toast.error('Failed to delete CV')
+    }
+  }
+
+  const handleReanalyze = async (cvId: string) => {
+    try {
+      await reanalyzeCv({ cvId })
+      await invalidateCvs()
+      toast.success('Re-analysis triggered')
+    } catch {
+      toast.error('Failed to trigger re-analysis')
+    }
   }
 
   if (isLoading) return <div className="p-8 text-center text-muted-foreground">Loading CVs...</div>
   if (isError) return <div className="p-8 text-center text-destructive">Failed to load CVs.</div>
-// No statusKey needed
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <header>
         <h1 className="text-2xl font-bold text-foreground">CV của tôi</h1>
         <p className="mt-1 text-sm text-muted-foreground">Tối đa 10 CV • Hỗ trợ PDF, DOCX</p>
       </header>
 
-      <div
-        className="card-surface flex flex-col items-center justify-center gap-3 border-2 border-dashed border-primary/20 bg-primary/[0.02] px-6 py-10 text-center"
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
-          e.preventDefault()
-          handleUpload(e.dataTransfer.files[0] ?? null)
-        }}
-      >
-        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-          <Upload className="h-6 w-6" />
-        </div>
-        <div>
-          <p className="font-semibold text-foreground">Kéo thả CV vào đây hoặc bấm để chọn</p>
-          <p className="mt-1 text-sm text-muted-foreground">PDF, DOCX • Tối đa 5MB • {cvList.length}/10 CV</p>
-        </div>
-        <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={(e) => handleUpload(e.target.files?.[0] ?? null)} />
-        <Button variant="outline" className="mt-1" onClick={() => fileRef.current?.click()}>Chọn file</Button>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
         <div className="card-surface h-fit space-y-1 p-3">
-          <p className="px-2 py-1 text-sm font-semibold text-foreground">Danh sách CV ({cvList.length})</p>
+          <div className="flex items-center justify-between px-2 py-1">
+            <p className="text-sm font-semibold text-foreground">Danh sách CV ({cvList.length}/10)</p>
+            <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={(e) => handleUpload(e.target.files?.[0] ?? null)} />
+            <Button size="sm" variant="outline" disabled={isUploading || cvList.length >= 10} onClick={() => fileRef.current?.click()} className="h-7 gap-1 px-2 text-xs">
+              <Upload className="h-3 w-3" />
+              {isUploading ? 'Đang tải...' : 'Thêm CV'}
+            </Button>
+          </div>
           {cvList.map((c) => {
             const fileType = getFileType(c.filename)
             const statusStr = String(c.analysisStatus ?? 'PENDING')
@@ -139,18 +187,106 @@ function MyCVPage() {
               <div className="flex items-center justify-between gap-2">
                 <p className="truncate font-semibold text-foreground">{cv.filename}</p>
                 <div className="flex shrink-0 gap-1">
-                  <Button size="sm" variant="ghost" title="Xem trước" onClick={() => toast.info(t('account_preview_unavailable'))}><Eye className="h-4 w-4" /></Button>
-                  <Button size="sm" variant="ghost" title="Đặt làm mặc định" onClick={() => toast.info('Set default coming soon')}><Star className={`h-4 w-4 ${cv.default ? 'fill-[var(--warning)] text-[var(--warning)]' : ''}`} /></Button>
-                  <Button size="sm" variant="ghost" title="Phân tích lại" onClick={() => toast.info('Re-analyze coming soon')}><RefreshCw className="h-4 w-4" /></Button>
-                  <Button size="sm" variant="ghost" title="Xóa" disabled={cv.default} onClick={() => toast.info('Delete CV coming soon')} className="text-[var(--danger)] hover:bg-[var(--danger-soft)] disabled:opacity-30"><Trash2 className="h-4 w-4" /></Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Xem trước"
+                    disabled={!cv.url}
+                    onClick={() => cv.url && window.open(cv.url, '_blank')}
+                  >
+                    <Eye className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Đặt làm mặc định"
+                    disabled={isAnyPending || !!cv.default}
+                    onClick={() => cv.id && handleSetDefault(cv.id)}
+                  >
+                    <Star className={`h-4 w-4 ${cv.default ? 'fill-[var(--warning)] text-[var(--warning)]' : ''}`} />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Phân tích lại"
+                    disabled={isAnyPending}
+                    onClick={() => cv.id && handleReanalyze(cv.id)}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isReanalyzing ? 'animate-spin' : ''}`} />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Xóa"
+                    disabled={isAnyPending || !!cv.default}
+                    onClick={() => cv.id && handleDelete(cv.id)}
+                    className="text-[var(--danger)] hover:bg-[var(--danger-soft)] disabled:opacity-30"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
-              <div className="mt-4 flex aspect-[3/4] max-h-72 items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted text-muted-foreground">
-                <div className="text-center">
-                  <FileText className="mx-auto mb-2 h-10 w-10 opacity-30" />
-                  <p className="text-sm">Xem trước CV</p>
+              
+              {cv.url ? (
+                <div className="mt-4 flex flex-col h-[calc(100vh-130px)] min-h-[600px] w-full overflow-hidden rounded-xl border border-border bg-background shadow-sm">
+                  {/* Toolbar */}
+                  <div className="flex items-center justify-between h-10 px-3 bg-muted/40 border-b border-border select-none shrink-0 gap-3">
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="w-3 h-3 rounded-full bg-red-400/80" />
+                      <span className="w-3 h-3 rounded-full bg-yellow-400/80" />
+                      <span className="w-3 h-3 rounded-full bg-green-400/80" />
+                    </div>
+                    <span className="text-xs font-medium text-muted-foreground truncate flex-1 text-center max-w-[200px]">
+                      {cv.filename}
+                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button size="sm" variant="ghost" onClick={zoomOut} disabled={zoom <= ZOOM_MIN} className="h-7 w-7 p-0" title="Thu nhỏ">
+                        <ZoomOut className="h-3.5 w-3.5" />
+                      </Button>
+                      <button onClick={zoomReset} className="min-w-[42px] text-center text-xs font-medium text-muted-foreground hover:text-foreground transition-colors px-1">
+                        {Math.round(zoom * 100)}%
+                      </button>
+                      <Button size="sm" variant="ghost" onClick={zoomIn} disabled={zoom >= ZOOM_MAX} className="h-7 w-7 p-0" title="Phóng to">
+                        <ZoomIn className="h-3.5 w-3.5" />
+                      </Button>
+                      <span className="mx-1 h-4 w-px bg-border" />
+                      <a
+                        href={cv.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-primary hover:text-primary/80 transition-colors flex items-center gap-1 font-medium"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        {currentLang === 'vi' ? 'Toàn màn hình' : 'Full screen'}
+                      </a>
+                    </div>
+                  </div>
+                  {/* Iframe container — overflow:auto enables scroll when zoom > 1 */}
+                  <div className="flex-1 bg-muted/10 overflow-auto">
+                    <div style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%`, minHeight: '100%' }}>
+                      <iframe
+                        src={`${cv.url}#toolbar=0&navpanes=0&view=FitH`}
+                        className="h-full w-full border-0"
+                        title={cv.filename}
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="mt-4 flex h-[calc(100vh-130px)] min-h-[600px] w-full flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/10 p-6 text-center shadow-inner">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground mb-3">
+                    <FileText className="h-6 w-6 opacity-60" />
+                  </div>
+                  <p className="text-sm font-medium text-foreground">
+                    {currentLang === 'vi' ? 'Xem trước CV' : 'CV Preview'}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1 max-w-[200px]">
+                    {currentLang === 'vi'
+                      ? 'Chọn một file từ danh sách hoặc tải lên để xem trước nội dung'
+                      : 'Select a file from the list or upload one to preview'}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="card-surface ai-gradient space-y-3 border-[var(--ai)]/20 p-5">
