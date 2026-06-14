@@ -1,10 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import * as React from 'react'
-import { Badge, Button, Card, CardContent, Input } from '@smart-cv/ui'
+import { Badge, Button, Card, CardContent, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@smart-cv/ui'
 import { useTranslation } from '@smart-cv/i18n'
 import { Briefcase, Eye, MapPin, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { useGetMe2, UserModels } from '@smart-cv/api'
+import { useGetMe2, useUpdate1, useUpdateUser, uploadCvFile, getGetMe2QueryKey, UserModels } from '@smart-cv/api'
+import { useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '../store/useAuthStore'
 
 export const Route = createFileRoute('/_account/profile')({
@@ -20,14 +21,94 @@ function toInitials(name: string) {
     .join('')
 }
 
-type ExpForm = { title: string; company: string; type: string; dateRange: string; location: string; achievements: string[] }
-type EduForm = { school: string; degree: string; dateRange: string }
+const months = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'))
+const currentYear = new Date().getFullYear()
+const years = Array.from({ length: 50 }, (_, i) => String(currentYear + 5 - i))
+
+function formatExperienceDates(item: UserModels.WorkExperience, currentLang: string) {
+  if (!item.startDate) return ''
+  const start = formatMonthYear(item.startDate)
+  const presentText = currentLang === 'vi' ? 'Hiện tại' : 'Present'
+  const end = item.current ? presentText : (item.endDate ? formatMonthYear(item.endDate) : '')
+  return `${start} - ${end}`
+}
+
+function formatMonthYear(dateStr: string) {
+  const parts = dateStr.split('-')
+  if (parts.length >= 2) {
+    return `${parts[1]}/${parts[0]}`
+  }
+  return dateStr
+}
+
+function formatEducationDates(item: UserModels.Education, currentLang: string) {
+  const start = item.startYear ? String(item.startYear) : ''
+  const presentText = currentLang === 'vi' ? 'Hiện tại' : 'Present'
+  const end = item.endYear ? String(item.endYear) : presentText
+  if (!start) return ''
+  return `${start} - ${end}`
+}
+
+type ExpForm = {
+  title: string
+  company: string
+  startMonth: string
+  startYear: string
+  endMonth: string
+  endYear: string
+  isCurrent: boolean
+  location: string
+}
+
+type EduForm = {
+  school: string
+  degree: string
+  startMonth: string
+  startYear: string
+  endMonth: string
+  endYear: string
+  isCurrent: boolean
+}
+
+function buildCandidateBase(profile: UserModels.CandidateResponse): UserModels.CandidateRequest {
+  return {
+    address: profile.address,
+    bio: profile.bio,
+    title: profile.title,
+    avatarUrl: profile.avatarUrl,
+    skills: profile.skills ?? [],
+    yearsOfExperience: profile.yearsOfExperience,
+    experiences: profile.experiences ?? [],
+    educations: profile.educations ?? [],
+    certifications: profile.certifications ?? [],
+    languages: profile.languages ?? [],
+    preferredLocation: profile.preferredLocation,
+    expectedSalaryMin: profile.expectedSalaryMin,
+    expectedSalaryMax: profile.expectedSalaryMax,
+    portfolioUrl: profile.portfolioUrl,
+    githubUrl: profile.githubUrl,
+    linkedinUrl: profile.linkedinUrl,
+  }
+}
 
 function ProfilePage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const currentLang = i18n.language || 'en'
+  const labelStart = currentLang === 'vi' ? 'Bắt đầu' : 'Start'
+  const labelEnd = currentLang === 'vi' ? 'Kết thúc' : 'End'
+  const labelCurrentWork = currentLang === 'vi' ? 'Đang làm việc tại đây' : 'Currently work here'
+  const labelCurrentStudy = currentLang === 'vi' ? 'Đang học tập tại đây' : 'Currently study here'
+  const labelMonth = currentLang === 'vi' ? 'Tháng' : 'Month'
+  const labelYear = currentLang === 'vi' ? 'Năm' : 'Year'
+
   const { isAuthenticated } = useAuthStore()
+  const queryClient = useQueryClient()
   const { data, isLoading, isError } = useGetMe2({ query: { enabled: isAuthenticated } })
   const profile = data?.data
+
+  const { mutateAsync: updateCandidate, isPending: isCandidatePending } = useUpdate1()
+  const { mutateAsync: updateUser, isPending: isUserPending } = useUpdateUser()
+  const isSaving = isCandidatePending || isUserPending
 
   React.useEffect(() => {
     document.title = t('page_title_profile')
@@ -45,28 +126,35 @@ function ProfilePage() {
   const initials = toInitials(fullName)
 
   const [editMode, setEditMode] = React.useState(false)
-  const [draft, setDraft] = React.useState({ name: '', email: '', phone: '', location: '', title: '', bio: '' })
+  const [draft, setDraft] = React.useState({ name: '', location: '', title: '', bio: '' })
   const [skillInput, setSkillInput] = React.useState('')
-  const [editingExperienceId, setEditingExperienceId] = React.useState<string | null>(null)
-  const [editingEducationId, setEditingEducationId] = React.useState<string | null>(null)
-  const [expForm, setExpForm] = React.useState<ExpForm>({ title: '', company: '', type: '', dateRange: '', location: '', achievements: [] })
-  const [eduForm, setEduForm] = React.useState<EduForm>({ school: '', degree: '', dateRange: '' })
+  const [editingExperienceIdx, setEditingExperienceIdx] = React.useState<number | null>(null)
+  const [editingEducationIdx, setEditingEducationIdx] = React.useState<number | null>(null)
+  const [expForm, setExpForm] = React.useState<ExpForm>({
+    title: '',
+    company: '',
+    startMonth: '01',
+    startYear: String(currentYear),
+    endMonth: '01',
+    endYear: String(currentYear),
+    isCurrent: false,
+    location: '',
+  })
+  const [eduForm, setEduForm] = React.useState<EduForm>({
+    school: '',
+    degree: '',
+    startMonth: '01',
+    startYear: String(currentYear),
+    endMonth: '01',
+    endYear: String(currentYear),
+    isCurrent: false,
+  })
 
   const fileRef = React.useRef<HTMLInputElement>(null)
-
-  const displayValues = {
-    name: fullName,
-    email,
-    phone,
-    location: address,
-    title,
-  }
 
   function handleEditClick() {
     setDraft({
       name: profile?.fullName ?? '',
-      email: profile?.email ?? '',
-      phone: profile?.phone ?? '',
       location: profile?.address ?? '',
       title: profile?.title ?? '',
       bio: profile?.bio ?? '',
@@ -74,17 +162,173 @@ function ProfilePage() {
     setEditMode(true)
   }
 
+  async function handleSave() {
+    if (!profile?.id || !profile?.userId) return
+    try {
+      await Promise.all([
+        updateCandidate({
+          id: profile.id,
+          data: { ...buildCandidateBase(profile), address: draft.location, title: draft.title, bio: draft.bio },
+        }),
+        updateUser({
+          userId: profile.userId,
+          data: { fullName: draft.name },
+        }),
+      ])
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+      toast.success(currentLang === 'vi' ? 'Hồ sơ đã cập nhật' : 'Profile updated')
+      setEditMode(false)
+    } catch {
+      // Resync from server in case one of the two mutations succeeded before the other failed
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+      toast.error(currentLang === 'vi' ? 'Cập nhật thất bại' : 'Update failed')
+    }
+  }
+
   const resetExpForm = () => {
-    setEditingExperienceId(null)
-    setExpForm({ title: '', company: '', type: '', dateRange: '', location: '', achievements: [] })
+    setEditingExperienceIdx(null)
+    setExpForm({
+      title: '',
+      company: '',
+      startMonth: '01',
+      startYear: String(currentYear),
+      endMonth: '01',
+      endYear: String(currentYear),
+      isCurrent: false,
+      location: '',
+    })
   }
 
   const resetEduForm = () => {
-    setEditingEducationId(null)
-    setEduForm({ school: '', degree: '', dateRange: '' })
+    setEditingEducationIdx(null)
+    setEduForm({
+      school: '',
+      degree: '',
+      startMonth: '01',
+      startYear: String(currentYear),
+      endMonth: '01',
+      endYear: String(currentYear),
+      isCurrent: false,
+    })
   }
 
-  const handleUpload = (file: File | null) => {
+  async function handleSaveExperience() {
+    if (!profile?.id) return
+    const startDate = `${expForm.startYear}-${expForm.startMonth}`
+    const endDate = expForm.isCurrent ? undefined : `${expForm.endYear}-${expForm.endMonth}`
+    const newItem: UserModels.WorkExperience = {
+      title: expForm.title,
+      company: expForm.company,
+      location: expForm.location,
+      startDate,
+      endDate,
+      current: expForm.isCurrent,
+    }
+    const updated =
+      editingExperienceIdx !== null
+        ? experiences.map((exp, i) => (i === editingExperienceIdx ? newItem : exp))
+        : [...experiences, newItem]
+    try {
+      await updateCandidate({
+        id: profile.id,
+        data: { ...buildCandidateBase(profile), experiences: updated },
+      })
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+      toast.success(currentLang === 'vi' ? 'Kinh nghiệm đã lưu' : 'Experience saved')
+      resetExpForm()
+    } catch {
+      toast.error(currentLang === 'vi' ? 'Lưu thất bại' : 'Save failed')
+    }
+  }
+
+  async function handleDeleteExperience(idx: number) {
+    if (!profile?.id) return
+    const updated = experiences.filter((_, i) => i !== idx)
+    try {
+      await updateCandidate({
+        id: profile.id,
+        data: { ...buildCandidateBase(profile), experiences: updated },
+      })
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+      toast.success(currentLang === 'vi' ? 'Đã xóa kinh nghiệm' : 'Experience deleted')
+    } catch {
+      toast.error(currentLang === 'vi' ? 'Xóa thất bại' : 'Delete failed')
+    }
+  }
+
+  async function handleSaveEducation() {
+    if (!profile?.id) return
+    const newItem: UserModels.Education = {
+      institution: eduForm.school,
+      degree: eduForm.degree,
+      startYear: Number(eduForm.startYear),
+      endYear: eduForm.isCurrent ? undefined : Number(eduForm.endYear),
+    }
+    const updated =
+      editingEducationIdx !== null
+        ? educations.map((edu, i) => (i === editingEducationIdx ? newItem : edu))
+        : [...educations, newItem]
+    try {
+      await updateCandidate({
+        id: profile.id,
+        data: { ...buildCandidateBase(profile), educations: updated },
+      })
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+      toast.success(currentLang === 'vi' ? 'Học vấn đã lưu' : 'Education saved')
+      resetEduForm()
+    } catch {
+      toast.error(currentLang === 'vi' ? 'Lưu thất bại' : 'Save failed')
+    }
+  }
+
+  async function handleDeleteEducation(idx: number) {
+    if (!profile?.id) return
+    const updated = educations.filter((_, i) => i !== idx)
+    try {
+      await updateCandidate({
+        id: profile.id,
+        data: { ...buildCandidateBase(profile), educations: updated },
+      })
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+      toast.success(currentLang === 'vi' ? 'Đã xóa học vấn' : 'Education deleted')
+    } catch {
+      toast.error(currentLang === 'vi' ? 'Xóa thất bại' : 'Delete failed')
+    }
+  }
+
+  async function handleAddSkill() {
+    const value = skillInput.trim()
+    if (!value || !profile?.id) return
+    if (skills.includes(value)) {
+      setSkillInput('')
+      return
+    }
+    try {
+      await updateCandidate({
+        id: profile.id,
+        data: { ...buildCandidateBase(profile), skills: [...skills, value] },
+      })
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+      setSkillInput('')
+    } catch {
+      toast.error(currentLang === 'vi' ? 'Thêm kỹ năng thất bại' : 'Failed to add skill')
+    }
+  }
+
+  async function handleRemoveSkill(skill: string) {
+    if (!profile?.id) return
+    try {
+      await updateCandidate({
+        id: profile.id,
+        data: { ...buildCandidateBase(profile), skills: skills.filter((s) => s !== skill) },
+      })
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+    } catch {
+      toast.error(currentLang === 'vi' ? 'Xóa kỹ năng thất bại' : 'Failed to remove skill')
+    }
+  }
+
+  const handleUpload = async (file: File | null) => {
     if (!file) return
     const validType = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)
     if (!validType) {
@@ -95,12 +339,29 @@ function ProfilePage() {
       toast.error(t('account_upload_too_large'))
       return
     }
-    // CV upload coming soon
-    toast.info('CV upload coming soon')
+    try {
+      await uploadCvFile(file)
+      await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
+      toast.success(currentLang === 'vi' ? 'CV đã tải lên' : 'CV uploaded')
+    } catch {
+      toast.error(currentLang === 'vi' ? 'Tải CV thất bại' : 'CV upload failed')
+    } finally {
+      if (fileRef.current) fileRef.current.value = ''
+    }
   }
 
-  if (isLoading) return <div className="p-8 text-center text-muted-foreground">Loading profile...</div>
-  if (isError) return <div className="p-8 text-center text-destructive">Failed to load profile.</div>
+  if (isLoading) return <div className="p-8 text-center text-muted-foreground">{currentLang === 'vi' ? 'Đang tải hồ sơ...' : 'Loading profile...'}</div>
+  if (isError) return <div className="p-8 text-center text-destructive">{currentLang === 'vi' ? 'Tải hồ sơ thất bại.' : 'Failed to load profile.'}</div>
+
+  const basicInfoFields: Array<{ label: string; key: keyof typeof draft | 'email' | 'phone'; editable: boolean }> = [
+    { label: currentLang === 'vi' ? 'Họ và tên' : 'Full Name', key: 'name', editable: true },
+    { label: currentLang === 'vi' ? 'Email' : 'Email', key: 'email', editable: false },
+    { label: currentLang === 'vi' ? 'Số điện thoại' : 'Phone', key: 'phone', editable: false },
+    { label: currentLang === 'vi' ? 'Địa điểm' : 'Location', key: 'location', editable: true },
+    { label: currentLang === 'vi' ? 'Tiêu đề' : 'Title', key: 'title', editable: true },
+  ]
+
+  const displayValues: Record<string, string> = { name: fullName, email, phone, location: address, title }
 
   return (
     <div className="space-y-6">
@@ -115,21 +376,17 @@ function ProfilePage() {
             </div>
             <hr className="border-border" />
             <div className="space-y-2 text-sm">
-              <p className="flex items-center justify-between"><span className="inline-flex items-center gap-2 text-muted-foreground"><Briefcase className="h-4 w-4" />Applied</span><span className="font-semibold text-foreground">0</span></p>
-              <p className="flex items-center justify-between"><span className="inline-flex items-center gap-2 text-muted-foreground">♡ Saved</span><span className="font-semibold text-foreground">0</span></p>
-              <p className="flex items-center justify-between"><span className="inline-flex items-center gap-2 text-muted-foreground"><Eye className="h-4 w-4" />Profile views</span><span className="font-semibold text-foreground">34</span></p>
+              <p className="flex items-center justify-between"><span className="inline-flex items-center gap-2 text-muted-foreground"><Briefcase className="h-4 w-4" />{currentLang === 'vi' ? 'Đã ứng tuyển' : 'Applied'}</span><span className="font-semibold text-foreground">0</span></p>
+              <p className="flex items-center justify-between"><span className="inline-flex items-center gap-2 text-muted-foreground">♡ {currentLang === 'vi' ? 'Đã lưu' : 'Saved'}</span><span className="font-semibold text-foreground">0</span></p>
+              <p className="flex items-center justify-between"><span className="inline-flex items-center gap-2 text-muted-foreground"><Eye className="h-4 w-4" />{currentLang === 'vi' ? 'Lượt xem hồ sơ' : 'Profile views'}</span><span className="font-semibold text-foreground">34</span></p>
             </div>
             <hr className="border-border" />
             {!editMode ? (
-              <Button variant="outline" className="w-full" onClick={handleEditClick}>Edit Profile</Button>
+              <Button variant="outline" className="w-full" onClick={handleEditClick}>{currentLang === 'vi' ? 'Chỉnh sửa hồ sơ' : 'Edit Profile'}</Button>
             ) : (
               <div className="flex gap-2">
-                <Button className="w-full" onClick={() => {
-                  // Profile update coming soon
-                  toast.info('Profile update coming soon')
-                  setEditMode(false)
-                }}>Save</Button>
-                <Button variant="outline" className="w-full" onClick={() => setEditMode(false)}>Cancel</Button>
+                <Button className="w-full" disabled={isSaving} onClick={handleSave}>{isSaving ? (currentLang === 'vi' ? 'Đang lưu...' : 'Saving...') : (currentLang === 'vi' ? 'Lưu' : 'Save')}</Button>
+                <Button variant="outline" className="w-full" disabled={isSaving} onClick={() => setEditMode(false)}>{currentLang === 'vi' ? 'Hủy' : 'Cancel'}</Button>
               </div>
             )}
           </CardContent>
@@ -138,25 +395,22 @@ function ProfilePage() {
         <div className="space-y-6">
           <Card>
             <CardContent className="p-6">
-              <h2 className="mb-4 border-l-4 border-primary pl-3 text-lg font-semibold text-foreground">Basic Info</h2>
-              {[
-                ['Full Name', 'name'],
-                ['Email', 'email'],
-                ['Phone', 'phone'],
-                ['Location', 'location'],
-                ['Title', 'title'],
-              ].map(([label, key]) => (
-                <div key={label} className="flex items-start gap-3 border-b border-border py-2 text-sm last:border-0">
+              <h2 className="mb-4 border-l-4 border-primary pl-3 text-lg font-semibold text-foreground">{currentLang === 'vi' ? 'Thông tin cơ bản' : 'Basic Info'}</h2>
+              {basicInfoFields.map(({ label, key, editable }) => (
+                <div key={key} className="flex items-start gap-3 border-b border-border py-2 text-sm last:border-0">
                   <span className="w-28 shrink-0 font-medium text-muted-foreground">{label}</span>
-                  {editMode ? (
-                    <Input value={draft[key as keyof typeof draft] as string} onChange={(e) => setDraft((prev) => ({ ...prev, [key]: e.target.value }))} />
+                  {editMode && editable && key !== 'email' && key !== 'phone' ? (
+                    <Input
+                      value={draft[key as keyof typeof draft] as string}
+                      onChange={(e) => setDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+                    />
                   ) : (
-                    <span className="text-foreground">{displayValues[key as keyof typeof displayValues]}</span>
+                    <span className="text-foreground">{displayValues[key]}</span>
                   )}
                 </div>
               ))}
               <div className="mt-3">
-                <p className="mb-2 text-sm font-medium text-muted-foreground">Bio</p>
+                <p className="mb-2 text-sm font-medium text-muted-foreground">{currentLang === 'vi' ? 'Giới thiệu bản thân' : 'Bio'}</p>
                 {editMode ? (
                   <textarea className="border-input bg-background min-h-24 w-full rounded-md border px-3 py-2 text-sm" value={draft.bio} onChange={(e) => setDraft((prev) => ({ ...prev, bio: e.target.value }))} />
                 ) : (
@@ -168,97 +422,209 @@ function ProfilePage() {
 
           <Card>
             <CardContent className="space-y-4 p-6">
-              <h2 className="border-l-4 border-primary pl-3 text-lg font-semibold text-foreground">Work Experience</h2>
+              <h2 className="border-l-4 border-primary pl-3 text-lg font-semibold text-foreground">{currentLang === 'vi' ? 'Kinh nghiệm làm việc' : 'Work Experience'}</h2>
               {experiences.map((item, idx) => (
                 <div key={idx} className="rounded-xl border border-border p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="font-semibold text-foreground">{item.title}</h3>
                       <p className="text-sm text-muted-foreground">{item.company}</p>
-                      <p className="text-xs text-muted-foreground">{item.location}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {item.location} {item.location && '•'} {formatExperienceDates(item, currentLang)}
+                      </p>
                     </div>
                     <div className="flex gap-2">
                       <Button variant="outline" size="sm" onClick={() => {
-                        setEditingExperienceId(String(idx))
-                        setExpForm({ title: item.title ?? '', company: item.company ?? '', type: '', dateRange: '', location: item.location ?? '', achievements: [] })
-                      }}>Sửa</Button>
-                      <Button variant="outline" size="sm" onClick={() => toast.info('Profile update coming soon')}>Xóa</Button>
+                        setEditingExperienceIdx(idx)
+                        const [sYear, sMonth] = (item.startDate ?? '').split('-')
+                        const [eYear, eMonth] = (item.endDate ?? '').split('-')
+                        setExpForm({
+                          title: item.title ?? '',
+                          company: item.company ?? '',
+                          startMonth: sMonth || '01',
+                          startYear: sYear || String(currentYear),
+                          endMonth: eMonth || '01',
+                          endYear: eYear || String(currentYear),
+                          isCurrent: !!item.current,
+                          location: item.location ?? '',
+                        })
+                      }}>{currentLang === 'vi' ? 'Sửa' : 'Edit'}</Button>
+                      <Button variant="outline" size="sm" disabled={isCandidatePending} onClick={() => handleDeleteExperience(idx)}>{currentLang === 'vi' ? 'Xóa' : 'Delete'}</Button>
                     </div>
                   </div>
                 </div>
               ))}
-              <div className="grid gap-2 md:grid-cols-2">
-                <Input value={expForm.title} onChange={(e) => setExpForm((p) => ({ ...p, title: e.target.value }))} placeholder="Title" />
-                <Input value={expForm.company} onChange={(e) => setExpForm((p) => ({ ...p, company: e.target.value }))} placeholder="Company" />
-                <Input value={expForm.type} onChange={(e) => setExpForm((p) => ({ ...p, type: e.target.value }))} placeholder="Type" />
-                <Input value={expForm.dateRange} onChange={(e) => setExpForm((p) => ({ ...p, dateRange: e.target.value }))} placeholder="Date range" />
-                <Input value={expForm.location} onChange={(e) => setExpForm((p) => ({ ...p, location: e.target.value }))} placeholder="Location" />
+              <div className="grid gap-4 md:grid-cols-2">
+                <Input value={expForm.title} onChange={(e) => setExpForm((p) => ({ ...p, title: e.target.value }))} placeholder={currentLang === 'vi' ? 'Chức danh' : 'Title'} />
+                <Input value={expForm.company} onChange={(e) => setExpForm((p) => ({ ...p, company: e.target.value }))} placeholder={currentLang === 'vi' ? 'Công ty' : 'Company'} />
+                <Input value={expForm.location} onChange={(e) => setExpForm((p) => ({ ...p, location: e.target.value }))} placeholder={currentLang === 'vi' ? 'Địa điểm' : 'Location'} />
+
+                <div className="col-span-2 space-y-3">
+                  <div className="flex flex-wrap items-center gap-6">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground min-w-[70px]">{labelStart}:</span>
+                      <Select value={expForm.startMonth} onValueChange={(val) => setExpForm((p) => ({ ...p, startMonth: val }))}>
+                        <SelectTrigger className="w-[85px]"><SelectValue placeholder={labelMonth} /></SelectTrigger>
+                        <SelectContent className="max-h-[200px] overflow-y-auto bg-popover text-popover-foreground border border-border shadow-md">
+                          {months.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                      <Select value={expForm.startYear} onValueChange={(val) => setExpForm((p) => ({ ...p, startYear: val }))}>
+                        <SelectTrigger className="w-[100px]"><SelectValue placeholder={labelYear} /></SelectTrigger>
+                        <SelectContent className="max-h-[200px] overflow-y-auto bg-popover text-popover-foreground border border-border shadow-md">
+                          {years.map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {!expForm.isCurrent && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground min-w-[70px]">{labelEnd}:</span>
+                        <Select value={expForm.endMonth} onValueChange={(val) => setExpForm((p) => ({ ...p, endMonth: val }))}>
+                          <SelectTrigger className="w-[85px]"><SelectValue placeholder={labelMonth} /></SelectTrigger>
+                          <SelectContent className="max-h-[200px] overflow-y-auto bg-popover text-popover-foreground border border-border shadow-md">
+                            {months.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <Select value={expForm.endYear} onValueChange={(val) => setExpForm((p) => ({ ...p, endYear: val }))}>
+                          <SelectTrigger className="w-[100px]"><SelectValue placeholder={labelYear} /></SelectTrigger>
+                          <SelectContent className="max-h-[200px] overflow-y-auto bg-popover text-popover-foreground border border-border shadow-md">
+                            {years.map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <input type="checkbox" id="expIsCurrent" checked={expForm.isCurrent} onChange={(e) => setExpForm((p) => ({ ...p, isCurrent: e.target.checked }))} className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer" />
+                      <label htmlFor="expIsCurrent" className="text-sm font-medium text-foreground cursor-pointer select-none">{labelCurrentWork}</label>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => {
-                  toast.info('Profile update coming soon')
-                  resetExpForm()
-                }}>{editingExperienceId ? 'Lưu sửa' : 'Thêm kinh nghiệm'}</Button>
-                {editingExperienceId && <Button variant="ghost" size="sm" onClick={resetExpForm}>Hủy</Button>}
+                <Button variant="outline" size="sm" disabled={isCandidatePending} onClick={handleSaveExperience}>
+                  {isCandidatePending ? (currentLang === 'vi' ? 'Đang lưu...' : 'Saving...') : editingExperienceIdx !== null ? (currentLang === 'vi' ? 'Lưu sửa' : 'Save Edit') : (currentLang === 'vi' ? 'Thêm kinh nghiệm' : 'Add Experience')}
+                </Button>
+                {editingExperienceIdx !== null && <Button variant="ghost" size="sm" onClick={resetExpForm}>{currentLang === 'vi' ? 'Hủy' : 'Cancel'}</Button>}
               </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardContent className="space-y-4 p-6">
-              <h2 className="border-l-4 border-primary pl-3 text-lg font-semibold text-foreground">Education</h2>
+              <h2 className="border-l-4 border-primary pl-3 text-lg font-semibold text-foreground">{currentLang === 'vi' ? 'Học vấn' : 'Education'}</h2>
               {educations.map((item, idx) => (
                 <div key={idx} className="flex items-center justify-between gap-3 rounded-xl border border-border p-4">
                   <div>
                     <p className="font-semibold text-foreground">{item.institution}</p>
                     <p className="text-sm text-muted-foreground">{item.degree}</p>
+                    <p className="text-xs text-muted-foreground">{formatEducationDates(item, currentLang)}</p>
                   </div>
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => {
-                      setEditingEducationId(String(idx))
-                      setEduForm({ school: item.institution ?? '', degree: item.degree ?? '', dateRange: '' })
-                    }}>Sửa</Button>
-                    <Button variant="outline" size="sm" onClick={() => toast.info('Profile update coming soon')}>Xóa</Button>
+                      setEditingEducationIdx(idx)
+                      setEduForm({
+                        school: item.institution ?? '',
+                        degree: item.degree ?? '',
+                        startMonth: '01',
+                        startYear: item.startYear ? String(item.startYear) : String(currentYear),
+                        endMonth: '01',
+                        endYear: item.endYear != null ? String(item.endYear) : String(currentYear),
+                        isCurrent: item.endYear == null,
+                      })
+                    }}>{currentLang === 'vi' ? 'Sửa' : 'Edit'}</Button>
+                    <Button variant="outline" size="sm" disabled={isCandidatePending} onClick={() => handleDeleteEducation(idx)}>{currentLang === 'vi' ? 'Xóa' : 'Delete'}</Button>
                   </div>
                 </div>
               ))}
-              <div className="grid gap-2 md:grid-cols-3">
-                <Input value={eduForm.school} onChange={(e) => setEduForm((p) => ({ ...p, school: e.target.value }))} placeholder="School" />
-                <Input value={eduForm.degree} onChange={(e) => setEduForm((p) => ({ ...p, degree: e.target.value }))} placeholder="Degree" />
-                <Input value={eduForm.dateRange} onChange={(e) => setEduForm((p) => ({ ...p, dateRange: e.target.value }))} placeholder="Date range" />
+              <div className="grid gap-4 md:grid-cols-2">
+                <Input value={eduForm.school} onChange={(e) => setEduForm((p) => ({ ...p, school: e.target.value }))} placeholder={currentLang === 'vi' ? 'Trường học' : 'School'} />
+                <Input value={eduForm.degree} onChange={(e) => setEduForm((p) => ({ ...p, degree: e.target.value }))} placeholder={currentLang === 'vi' ? 'Bằng cấp' : 'Degree'} />
+
+                <div className="col-span-2 space-y-3">
+                  <div className="flex flex-wrap items-center gap-6">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground min-w-[70px]">{labelStart}:</span>
+                      <Select value={eduForm.startMonth} onValueChange={(val) => setEduForm((p) => ({ ...p, startMonth: val }))}>
+                        <SelectTrigger className="w-[85px]"><SelectValue placeholder={labelMonth} /></SelectTrigger>
+                        <SelectContent className="max-h-[200px] overflow-y-auto bg-popover text-popover-foreground border border-border shadow-md">
+                          {months.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                      <Select value={eduForm.startYear} onValueChange={(val) => setEduForm((p) => ({ ...p, startYear: val }))}>
+                        <SelectTrigger className="w-[100px]"><SelectValue placeholder={labelYear} /></SelectTrigger>
+                        <SelectContent className="max-h-[200px] overflow-y-auto bg-popover text-popover-foreground border border-border shadow-md">
+                          {years.map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {!eduForm.isCurrent && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground min-w-[70px]">{labelEnd}:</span>
+                        <Select value={eduForm.endMonth} onValueChange={(val) => setEduForm((p) => ({ ...p, endMonth: val }))}>
+                          <SelectTrigger className="w-[85px]"><SelectValue placeholder={labelMonth} /></SelectTrigger>
+                          <SelectContent className="max-h-[200px] overflow-y-auto bg-popover text-popover-foreground border border-border shadow-md">
+                            {months.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <Select value={eduForm.endYear} onValueChange={(val) => setEduForm((p) => ({ ...p, endYear: val }))}>
+                          <SelectTrigger className="w-[100px]"><SelectValue placeholder={labelYear} /></SelectTrigger>
+                          <SelectContent className="max-h-[200px] overflow-y-auto bg-popover text-popover-foreground border border-border shadow-md">
+                            {years.map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <input type="checkbox" id="eduIsCurrent" checked={eduForm.isCurrent} onChange={(e) => setEduForm((p) => ({ ...p, isCurrent: e.target.checked }))} className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer" />
+                      <label htmlFor="eduIsCurrent" className="text-sm font-medium text-foreground cursor-pointer select-none">{labelCurrentStudy}</label>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => {
-                  toast.info('Profile update coming soon')
-                  resetEduForm()
-                }}>{editingEducationId ? 'Lưu sửa' : 'Thêm học vấn'}</Button>
-                {editingEducationId && <Button variant="ghost" size="sm" onClick={resetEduForm}>Hủy</Button>}
+                <Button variant="outline" size="sm" disabled={isCandidatePending} onClick={handleSaveEducation}>
+                  {isCandidatePending ? (currentLang === 'vi' ? 'Đang lưu...' : 'Saving...') : editingEducationIdx !== null ? (currentLang === 'vi' ? 'Lưu sửa' : 'Save Edit') : (currentLang === 'vi' ? 'Thêm học vấn' : 'Add Education')}
+                </Button>
+                {editingEducationIdx !== null && <Button variant="ghost" size="sm" onClick={resetEduForm}>{currentLang === 'vi' ? 'Hủy' : 'Cancel'}</Button>}
               </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardContent className="space-y-4 p-6">
-              <h2 className="border-l-4 border-primary pl-3 text-lg font-semibold text-foreground">Skills & CV</h2>
+              <h2 className="border-l-4 border-primary pl-3 text-lg font-semibold text-foreground">{currentLang === 'vi' ? 'Kỹ năng & CV' : 'Skills & CV'}</h2>
               <div className="flex flex-wrap gap-2">
                 {skills.map((skill) => (
-                  <Badge key={skill} variant="secondary" className="gap-1">{skill}<button onClick={() => toast.info('Profile update coming soon')}><X className="h-3 w-3" /></button></Badge>
+                  <Badge key={skill} variant="secondary" className="gap-1">
+                    {skill}
+                    <button disabled={isCandidatePending} onClick={() => handleRemoveSkill(skill)}>
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
                 ))}
               </div>
               <div className="flex gap-2">
-                <Input value={skillInput} onChange={(e) => setSkillInput(e.target.value)} placeholder="Thêm kỹ năng" />
-                <Button onClick={() => {
-                  const value = skillInput.trim()
-                  if (!value) return
-                  setSkillInput('')
-                  toast.info('Profile update coming soon')
-                }}>Thêm</Button>
+                <Input
+                  value={skillInput}
+                  onChange={(e) => setSkillInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAddSkill() }}
+                  placeholder={currentLang === 'vi' ? 'Thêm kỹ năng' : 'Add Skill'}
+                />
+                <Button disabled={isCandidatePending} onClick={handleAddSkill}>{currentLang === 'vi' ? 'Thêm' : 'Add'}</Button>
               </div>
-              <div className="flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-border p-8 text-center text-muted-foreground" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleUpload(e.dataTransfer.files?.[0] ?? null) }}>
+              <div
+                className="flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-border p-8 text-center text-muted-foreground"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); handleUpload(e.dataTransfer.files?.[0] ?? null) }}
+              >
                 <Upload className="h-6 w-6" />
-                <p>Drag & drop or click to upload</p>
+                <p>{currentLang === 'vi' ? 'Kéo thả hoặc click để tải lên' : 'Drag & drop or click to upload'}</p>
                 <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={(e) => handleUpload(e.target.files?.[0] ?? null)} />
-                <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>Browse files</Button>
+                <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>{currentLang === 'vi' ? 'Chọn tệp tin' : 'Browse files'}</Button>
               </div>
             </CardContent>
           </Card>

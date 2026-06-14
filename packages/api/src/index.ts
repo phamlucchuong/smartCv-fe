@@ -29,3 +29,6 @@ export * as UserModels from './generated/user/model';
 export * as JobModels from './generated/job/model';
 export * as ApplicationModels from './generated/application/model';
 export * as AiModels from './generated/ai/model';
+
+// Custom helpers
+export { uploadCvFile } from './cv-upload';

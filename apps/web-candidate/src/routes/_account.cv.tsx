@@ -4,7 +4,8 @@ import { Button } from '@smart-cv/ui'
 import { useTranslation } from '@smart-cv/i18n'
 import { Upload, FileText, Star, Trash2, RefreshCw, Eye, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
-import { useListCvs } from '@smart-cv/api'
+import { useListCvs, useSetDefaultCv, useDeleteCv, useReanalyzeCv, uploadCvFile, getListCvsQueryKey } from '@smart-cv/api'
+import { useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '../store/useAuthStore'
 
 export const Route = createFileRoute('/_account/cv')({
@@ -25,39 +26,48 @@ const cvStatusLabel: Record<string, string> = {
   FAILED: 'Thất bại',
 }
 
-function getFileType(filename?: string): 'PDF' | 'DOC' {
+function getFileType(filename?: string): 'PDF' | 'DOCX' | 'DOC' {
   if (!filename) return 'PDF'
-  return filename.toLowerCase().endsWith('.pdf') ? 'PDF' : 'DOC'
+  const lower = filename.toLowerCase()
+  if (lower.endsWith('.pdf')) return 'PDF'
+  if (lower.endsWith('.docx')) return 'DOCX'
+  return 'DOC'
 }
 
 function formatDate(dateStr?: string): string {
   if (!dateStr) return ''
-  try {
-    const d = new Date(dateStr)
-    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`
-  } catch {
-    return dateStr
-  }
+  const d = new Date(dateStr)
+  if (isNaN(d.getTime())) return dateStr
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`
 }
 
 function MyCVPage() {
   const { t } = useTranslation()
   const { isAuthenticated } = useAuthStore()
+  const queryClient = useQueryClient()
   const { data, isLoading, isError } = useListCvs({ query: { enabled: isAuthenticated } })
   const cvList = data?.data ?? []
+
+  const { mutateAsync: setDefault, isPending: isSettingDefault } = useSetDefaultCv()
+  const { mutateAsync: deleteCv, isPending: isDeletingCv } = useDeleteCv()
+  const { mutateAsync: reanalyzeCv, isPending: isReanalyzing } = useReanalyzeCv()
+  const isAnyPending = isSettingDefault || isDeletingCv || isReanalyzing
 
   React.useEffect(() => {
     document.title = t('page_title_cv')
   }, [t])
 
   const [userSelected, setUserSelected] = React.useState<string | null>(null)
+  const [isUploading, setIsUploading] = React.useState(false)
   const fileRef = React.useRef<HTMLInputElement>(null)
 
   const defaultSelected = (cvList.find((c) => c.default) ?? cvList[0])?.id ?? ''
   const selected = userSelected ?? defaultSelected
   const cv = cvList.find((c) => c.id === selected) ?? cvList[0]
 
-  const handleUpload = (file: File | null) => {
+  const invalidateCvs = () => queryClient.invalidateQueries({ queryKey: getListCvsQueryKey() })
+
+  const handleUpload = async (file: File | null) => {
     if (!file) return
     const validType = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)
     if (!validType) {
@@ -68,13 +78,52 @@ function MyCVPage() {
       toast.error(t('account_upload_too_large'))
       return
     }
-    // CV upload coming soon
-    toast.info('CV upload coming soon')
+    setIsUploading(true)
+    try {
+      await uploadCvFile(file)
+      await invalidateCvs()
+      toast.success('CV uploaded successfully')
+    } catch {
+      toast.error('CV upload failed')
+    } finally {
+      setIsUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const handleSetDefault = async (cvId: string) => {
+    try {
+      await setDefault({ cvId })
+      await invalidateCvs()
+      toast.success('Default CV updated')
+    } catch {
+      toast.error('Failed to set default CV')
+    }
+  }
+
+  const handleDelete = async (cvId: string) => {
+    try {
+      await deleteCv({ cvId })
+      await invalidateCvs()
+      if (userSelected === cvId) setUserSelected(null)
+      toast.success('CV deleted')
+    } catch {
+      toast.error('Failed to delete CV')
+    }
+  }
+
+  const handleReanalyze = async (cvId: string) => {
+    try {
+      await reanalyzeCv({ cvId })
+      await invalidateCvs()
+      toast.success('Re-analysis triggered')
+    } catch {
+      toast.error('Failed to trigger re-analysis')
+    }
   }
 
   if (isLoading) return <div className="p-8 text-center text-muted-foreground">Loading CVs...</div>
   if (isError) return <div className="p-8 text-center text-destructive">Failed to load CVs.</div>
-// No statusKey needed
 
   return (
     <div className="space-y-6">
@@ -99,7 +148,9 @@ function MyCVPage() {
           <p className="mt-1 text-sm text-muted-foreground">PDF, DOCX • Tối đa 5MB • {cvList.length}/10 CV</p>
         </div>
         <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" className="hidden" onChange={(e) => handleUpload(e.target.files?.[0] ?? null)} />
-        <Button variant="outline" className="mt-1" onClick={() => fileRef.current?.click()}>Chọn file</Button>
+        <Button variant="outline" className="mt-1" disabled={isUploading} onClick={() => fileRef.current?.click()}>
+          {isUploading ? 'Đang tải lên...' : 'Chọn file'}
+        </Button>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
@@ -140,9 +191,34 @@ function MyCVPage() {
                 <p className="truncate font-semibold text-foreground">{cv.filename}</p>
                 <div className="flex shrink-0 gap-1">
                   <Button size="sm" variant="ghost" title="Xem trước" onClick={() => toast.info(t('account_preview_unavailable'))}><Eye className="h-4 w-4" /></Button>
-                  <Button size="sm" variant="ghost" title="Đặt làm mặc định" onClick={() => toast.info('Set default coming soon')}><Star className={`h-4 w-4 ${cv.default ? 'fill-[var(--warning)] text-[var(--warning)]' : ''}`} /></Button>
-                  <Button size="sm" variant="ghost" title="Phân tích lại" onClick={() => toast.info('Re-analyze coming soon')}><RefreshCw className="h-4 w-4" /></Button>
-                  <Button size="sm" variant="ghost" title="Xóa" disabled={cv.default} onClick={() => toast.info('Delete CV coming soon')} className="text-[var(--danger)] hover:bg-[var(--danger-soft)] disabled:opacity-30"><Trash2 className="h-4 w-4" /></Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Đặt làm mặc định"
+                    disabled={isAnyPending || !!cv.default}
+                    onClick={() => cv.id && handleSetDefault(cv.id)}
+                  >
+                    <Star className={`h-4 w-4 ${cv.default ? 'fill-[var(--warning)] text-[var(--warning)]' : ''}`} />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Phân tích lại"
+                    disabled={isAnyPending}
+                    onClick={() => cv.id && handleReanalyze(cv.id)}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isReanalyzing ? 'animate-spin' : ''}`} />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Xóa"
+                    disabled={isAnyPending || !!cv.default}
+                    onClick={() => cv.id && handleDelete(cv.id)}
+                    className="text-[var(--danger)] hover:bg-[var(--danger-soft)] disabled:opacity-30"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
               <div className="mt-4 flex aspect-[3/4] max-h-72 items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted text-muted-foreground">

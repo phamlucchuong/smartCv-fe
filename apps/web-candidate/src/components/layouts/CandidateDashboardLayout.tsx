@@ -19,6 +19,7 @@ import { Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMe
 import { i18n, useTranslation } from '@smart-cv/i18n'
 import { usePreferencesStore } from '../../store/usePreferencesStore'
 import { useAuthStore } from '../../store/useAuthStore'
+import { useGetMe2 } from '@smart-cv/api'
 
 interface NavItem {
   key: string
@@ -45,7 +46,17 @@ export function CandidateDashboardLayout() {
     other: true,
   })
 
-  const { email, signOut } = useAuthStore()
+  const { email, signOut, fullName, setFullName } = useAuthStore()
+  const { data: profileData } = useGetMe2({ query: { enabled: !!email && !fullName } })
+
+  React.useEffect(() => {
+    if (profileData?.data?.fullName && !fullName) {
+      setFullName(profileData.data.fullName)
+    }
+  }, [profileData, fullName, setFullName])
+
+  const displayName = fullName || (email ? email.split('@')[0] : 'Account')
+  const initial = displayName.charAt(0).toUpperCase()
   const theme = usePreferencesStore((s) => s.theme)
   const language = usePreferencesStore((s) => s.language)
   const toggleTheme = usePreferencesStore((s) => s.toggleTheme)
@@ -183,10 +194,10 @@ export function CandidateDashboardLayout() {
               <DropdownMenuTrigger asChild>
                 <button className="hover:bg-accent flex items-center gap-2 rounded-lg px-1.5 py-1">
                   <div className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-full text-xs font-semibold">
-                    {email?.charAt(0).toUpperCase() ?? '?'}
+                    {initial}
                   </div>
                   <div className="hidden text-left leading-tight md:block">
-                    <div className="text-sm font-medium">{email?.split('@')[0] ?? 'Account'}</div>
+                    <div className="text-sm font-medium">{displayName}</div>
                   </div>
                 </button>
               </DropdownMenuTrigger>
