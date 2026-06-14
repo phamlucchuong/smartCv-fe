@@ -126,7 +126,7 @@ function ProfilePage() {
   const initials = toInitials(fullName)
 
   const [editMode, setEditMode] = React.useState(false)
-  const [draft, setDraft] = React.useState({ name: '', location: '', title: '', bio: '' })
+  const [draft, setDraft] = React.useState({ name: '', email: '', phone: '', location: '', title: '', bio: '' })
   const [skillInput, setSkillInput] = React.useState('')
   const [editingExperienceIdx, setEditingExperienceIdx] = React.useState<number | null>(null)
   const [editingEducationIdx, setEditingEducationIdx] = React.useState<number | null>(null)
@@ -155,6 +155,8 @@ function ProfilePage() {
   function handleEditClick() {
     setDraft({
       name: profile?.fullName ?? '',
+      email: profile?.email ?? '',
+      phone: profile?.phone ?? '',
       location: profile?.address ?? '',
       title: profile?.title ?? '',
       bio: profile?.bio ?? '',
@@ -164,6 +166,17 @@ function ProfilePage() {
 
   async function handleSave() {
     if (!profile?.id || !profile?.userId) return
+    if (draft.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email)) {
+      toast.error(currentLang === 'vi' ? 'Email không hợp lệ' : 'Invalid email format')
+      return
+    }
+    if (draft.phone && !/^(0|\+84)(3|5|7|8|9)\d{8}$/.test(draft.phone)) {
+      toast.error(currentLang === 'vi' ? 'Số điện thoại không hợp lệ (VD: 0901234567)' : 'Invalid phone number (e.g. 0901234567)')
+      return
+    }
+    const userPayload: { fullName?: string; email?: string; phone?: string } = { fullName: draft.name }
+    if (draft.email && draft.email !== email) userPayload.email = draft.email
+    if (draft.phone !== phone) userPayload.phone = draft.phone || undefined
     try {
       await Promise.all([
         updateCandidate({
@@ -172,7 +185,7 @@ function ProfilePage() {
         }),
         updateUser({
           userId: profile.userId,
-          data: { fullName: draft.name },
+          data: userPayload,
         }),
       ])
       await queryClient.invalidateQueries({ queryKey: getGetMe2QueryKey() })
@@ -353,10 +366,10 @@ function ProfilePage() {
   if (isLoading) return <div className="p-8 text-center text-muted-foreground">{currentLang === 'vi' ? 'Đang tải hồ sơ...' : 'Loading profile...'}</div>
   if (isError) return <div className="p-8 text-center text-destructive">{currentLang === 'vi' ? 'Tải hồ sơ thất bại.' : 'Failed to load profile.'}</div>
 
-  const basicInfoFields: Array<{ label: string; key: keyof typeof draft | 'email' | 'phone'; editable: boolean }> = [
+  const basicInfoFields: Array<{ label: string; key: keyof typeof draft; editable: boolean }> = [
     { label: currentLang === 'vi' ? 'Họ và tên' : 'Full Name', key: 'name', editable: true },
-    { label: currentLang === 'vi' ? 'Email' : 'Email', key: 'email', editable: false },
-    { label: currentLang === 'vi' ? 'Số điện thoại' : 'Phone', key: 'phone', editable: false },
+    { label: currentLang === 'vi' ? 'Email' : 'Email', key: 'email', editable: true },
+    { label: currentLang === 'vi' ? 'Số điện thoại' : 'Phone', key: 'phone', editable: true },
     { label: currentLang === 'vi' ? 'Địa điểm' : 'Location', key: 'location', editable: true },
     { label: currentLang === 'vi' ? 'Tiêu đề' : 'Title', key: 'title', editable: true },
   ]
@@ -399,9 +412,9 @@ function ProfilePage() {
               {basicInfoFields.map(({ label, key, editable }) => (
                 <div key={key} className="flex items-start gap-3 border-b border-border py-2 text-sm last:border-0">
                   <span className="w-28 shrink-0 font-medium text-muted-foreground">{label}</span>
-                  {editMode && editable && key !== 'email' && key !== 'phone' ? (
+                  {editMode && editable ? (
                     <Input
-                      value={draft[key as keyof typeof draft] as string}
+                      value={draft[key] as string}
                       onChange={(e) => setDraft((prev) => ({ ...prev, [key]: e.target.value }))}
                     />
                   ) : (
