@@ -8,6 +8,9 @@ export function uploadCvFile(file: File) {
   return customInstance<ApiResponseCvUploadResponse>({
     url: '/api/candidates/cv/upload',
     method: 'POST',
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
     data: form,
   });
 }
